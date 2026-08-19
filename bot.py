@@ -20,7 +20,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_RU = "@airears"
-CHANNEL_UZ = "@airMusik_uz"
+CHANNEL_UZ = "@airMusic_uz"
 COVER_PATH = "cover.jpeg"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
