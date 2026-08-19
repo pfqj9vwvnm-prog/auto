@@ -4,103 +4,162 @@ import asyncio
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, FSInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-import lyricsgenius
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, TIT2, TPE1, APIC
+from mutagen.id3 import error as ID3Error
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
 CHANNEL_RU = "@airears"
 CHANNEL_UZ = "@airMusik_uz"
+COVER_PATH = "cover.jpeg"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-class PostState(StatesGroup):
-    waiting_for_lang = State()
-    waiting_for_action = State()
-    waiting_for_text = State()
+# Очередь и настройки задержки (по умолчанию 60 секунд = 1 минута)
+post_queue = asyncio.Queue()
+post_delay = 60 
 
-def get_footer(lang: str):
-    if lang == "uz":
-        return "\n\n<b><a href='https://t.me/airMusic_uz'>Obuna b’olish</a></b>"
-    return "\n\n<b><a href='https://t.me/airears'>Подписаться</a> | <a href='https://t.me/rec_airbot'>Порекомендовать трек</a></b>"
+# Словарь для хранения выбранного языка/канала пользователей (по умолчанию 'ru')
+user_langs = {}
 
-def build_caption(lang: str, title: str, lyrics: str) -> str:
+def format_duration(seconds: int) -> str:
+    """Форматирует секунды в вид MM:SS (например, 00:56)"""
+    if not seconds:
+        return "00:00"
+    m = seconds // 60
+    s = seconds % 60
+    return f"{m:02d}:{s:02d}"
+
+def get_caption(lang: str, title: str, duration: int) -> str:
+    dur_str = format_duration(duration)
     if lang == "uz":
-        header = f"• Musiqa nomi — {title}\n\nMusiqa teksti:\n<blockquote expandable>"
+        return f"▶︎ {dur_str}  <a href='https://t.me/airmusic_uz'>🎧 * {title}</a>"
     else:
-        header = f"• Трек — {title}\n\nТекст:\n<blockquote expandable>"
-    
-    footer = get_footer(lang)
-    max_len = 1024 - len(header) - len(footer) - len("</blockquote>") - 5
-    lyrics = (lyrics[:max_len] + "...") if len(lyrics) > max_len else lyrics
-    return f"{header}{lyrics}</blockquote>{footer}"
+        footer = "\n\n<b><a href='https://t.me/airears'>Подписаться</a> | <a href='https://t.me/rec_airbot'>Порекомендовать трек</a></b>"
+        return f"• Трек — {title}\n\nТекст отсутствует.{footer}"
 
-def fetch_lyrics(title, artist):
+def edit_metadata(file_path: str, new_title: str, lang: str):
     try:
-        genius = lyricsgenius.Genius(GENIUS_TOKEN, timeout=10, verbose=False)
-        song = genius.search_song(title, artist)
-        return re.sub(r'(\d*Embed$|^.*Lyrics\n?)', '', song.lyrics).strip() if song and song.lyrics else "Текст не найден."
-    except: return "Текст не найден."
+        audio = MP3(file_path, ID3=ID3)
+    except ID3Error:
+        audio = MP3(file_path)
+        audio.add_tags()
+    audio.delete()
+    audio.tags = ID3()
+    audio.tags.add(TIT2(encoding=3, text=new_title))
+    
+    # Установка автора в зависимости от языка
+    performer = "ʍузыᴋᴀᴧᴀᴩ ᴋᴀнᴀᴧи: @ᴀɪʀᴍᴜsɪᴋ_ᴜᴢ" if lang == "uz" else "ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs"
+    audio.tags.add(TPE1(encoding=3, text=performer))
+    
+    if os.path.exists(COVER_PATH):
+        with open(COVER_PATH, 'rb') as f:
+            audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=f.read()))
+    audio.save(v2_version=3)
+
+async def queue_worker():
+    """Фоновый воркер для отправки постов по очереди с задержкой"""
+    global post_delay
+    while True:
+        task = await post_queue.get()
+        try:
+            chat = CHANNEL_RU if task['lang'] == "ru" else CHANNEL_UZ
+            await bot.send_audio(
+                chat_id=chat,
+                audio=FSInputFile(task['file_path']),
+                caption=task['caption'],
+                title=task['title'],
+                performer=task['performer']
+            )
+        except Exception as e:
+            print(f"Ошибка отправки из очереди: {e}")
+        finally:
+            if os.path.exists(task['file_path']):
+                try:
+                    os.remove(task['file_path'])
+                except:
+                    pass
+            post_queue.task_done()
+        await asyncio.sleep(post_delay)
 
 @dp.message(F.text == "/start")
 async def cmd_start(message: Message):
-    await message.answer("👋 Привет! Пришли мне аудиофайл, и я оформлю его для канала.")
+    current_mode = user_langs.get(message.from_user.id, "ru")
+    await message.answer(
+        f"👋 Привет! Твой текущий режим: <b>{current_mode.upper()}</b>.\n\n"
+        "📌 <b>Команды:</b>\n"
+        "🇷🇺 /ru — переключить на русский (@airears)\n"
+        "🇺🇿 /uz — переключить на узбекский (@airMusik_uz)\n"
+        "⏱ `/cd [сек]` — изменить интервал очереди (сейчас: <code>{post_delay}</code> сек)\n\n"
+        "Просто присылай аудиофайлы (можно сразу много), и бот автоматически добавит их в очередь на публикацию!"
+    )
+
+@dp.message(F.text.in_({"/ru", "/uz"}))
+async def set_channel_mode(message: Message):
+    lang = message.text[1:]
+    user_langs[message.from_user.id] = lang
+    channel = CHANNEL_RU if lang == "ru" else CHANNEL_UZ
+    await message.reply(f"✅ Режим изменен на <b>{lang.upper()}</b>.\nКанал для отправки: <b>{channel}</b>")
+
+@dp.message(F.text.startswith("/cd"))
+async def change_delay(message: Message):
+    global post_delay
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].isdigit():
+        post_delay = int(parts[1])
+        await message.reply(f"⏱ Задержка между постами успешно изменена на <b>{post_delay} сек.</b>")
+    else:
+        await message.reply(f"⏱ Текущая задержка: <b>{post_delay} сек.</b>\nПример использования: `/cd 30` (установить 30 секунд).")
 
 @dp.message(F.audio)
-async def handle_audio(message: Message, state: FSMContext):
-    await state.update_data(file_id=message.audio.file_id, title=message.audio.title or "Unknown", artist=message.audio.performer or "")
-    await state.set_state(PostState.waiting_for_lang)
-    await message.reply("Куда публикуем? Напиши /ru или /uz")
-
-@dp.message(PostState.waiting_for_lang, F.text.in_({"/ru", "/uz"}))
-async def set_lang(message: Message, state: FSMContext):
-    lang = message.text[1:]
-    data = await state.get_data()
-    lyrics = await asyncio.to_thread(fetch_lyrics, data['title'], data['artist'])
+async def handle_audio(message: Message):
+    user_id = message.from_user.id
+    lang = user_langs.get(user_id, "ru")
     
-    caption = build_caption(lang, data['title'], lyrics)
-    await state.update_data(lang=lang, caption=caption)
+    audio = message.audio
+    title = audio.title or audio.file_name.replace('.mp3', '')
+    duration = audio.duration or 0
     
-    await message.answer_audio(audio=data['file_id'], caption=caption)
-    await message.answer("Пример готов.\n/y — публ., /n — отмена, /text — изменить текст.")
-    await state.set_state(PostState.waiting_for_action)
-
-@dp.message(PostState.waiting_for_action, F.text == "/text")
-async def ask_text(message: Message, state: FSMContext):
-    await state.set_state(PostState.waiting_for_text)
-    await message.reply("Пришли текст:")
-
-@dp.message(PostState.waiting_for_text)
-async def get_text(message: Message, state: FSMContext):
-    data = await state.get_data()
-    caption = build_caption(data['lang'], data['title'], message.text)
-    await state.update_data(caption=caption)
-    await message.answer_audio(audio=data['file_id'], caption=caption)
-    await state.set_state(PostState.waiting_for_action)
-
-@dp.message(PostState.waiting_for_action, F.text == "/y")
-async def publish(message: Message, state: FSMContext):
-    data = await state.get_data()
-    chat = CHANNEL_RU if data['lang'] == "ru" else CHANNEL_UZ
+    local_path = f"{audio.file_id}.mp3"
+    
     try:
-        await bot.send_audio(chat, audio=data['file_id'], caption=data['caption'])
-        await message.reply(f"✅ Опубликовано в {chat}!")
+        file_info = await bot.get_file(audio.file_id)
+        await bot.download_file(file_info.file_path, local_path)
+        
+        performer = "ʍузыᴋᴀᴧᴀᴩ ᴋᴀнᴀᴧи: @ᴀɪʀᴍᴜsɪᴋ_ᴜᴢ" if lang == "uz" else "ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs"
+        await asyncio.to_thread(edit_metadata, local_path, title, lang)
+        
+        caption = get_caption(lang, title, duration)
+        
+        # Помещаем в общую очередь
+        await post_queue.put({
+            'file_path': local_path,
+            'caption': caption,
+            'title': title,
+            'performer': performer,
+            'lang': lang
+        })
+        
+        q_size = post_queue.qsize()
+        await message.reply(f"📥 Трек добавлен в очередь! Позиция: {q_size}. Интервал отправки: {post_delay}с.")
     except Exception as e:
-        await message.reply(f"Ошибка публикации: {e}")
-    await state.clear()
+        await message.reply(f"❌ Ошибка обработки: {e}")
+        if os.path.exists(local_path):
+            os.remove(local_path)
 
-@dp.message(PostState.waiting_for_action, F.text == "/n")
-async def cancel(message: Message, state: FSMContext):
-    await state.clear()
-    await message.reply("🚫 Отменено.")
+async def main():
+    # Запуск фонового процесса обработки очереди
+    asyncio.create_task(queue_worker())
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Бот запущен и готов к работе с очередями!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
