@@ -23,12 +23,16 @@ GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
 CHANNEL_ID = "@airears"
 COVER_PATH = "cover.jpeg"
 
+# Настройка HTML разметки для ссылок
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 class PostState(StatesGroup):
     waiting_for_action = State()
     waiting_for_text = State()
+
+def get_footer():
+    return "\n\n<b><a href='https://t.me/airears'>Подписаться</a> | <a href='https://t.me/rec_airbot'>Порекомендовать трек</a></b>"
 
 def clean_lyrics(text: str) -> str:
     if not text: return "Текст не найден."
@@ -87,7 +91,7 @@ async def handle_audio(message: Message, state: FSMContext):
         lyrics = await asyncio.to_thread(fetch_lyrics_sync, original_title, original_artist)
 
         header = f"• Трек — {original_title}\n\n<blockquote expandable>Текст:\n"
-        footer = "</blockquote>\n\n<b>@airears</b>"
+        footer = get_footer()
         max_len = 1024 - len(header) - len(footer) - 5
         lyrics = lyrics[:max_len] + "..." if len(lyrics) > max_len else lyrics
         caption = f"{header}{lyrics}{footer}"
@@ -95,7 +99,7 @@ async def handle_audio(message: Message, state: FSMContext):
         await message.answer_audio(audio=FSInputFile(local_filepath), caption=caption, title=original_title, performer="ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs")
         await message.answer("👆 Пример готов.\n/y — публ.\n/n — отмена\n/text — вставить текст вручную")
         await state.set_state(PostState.waiting_for_action)
-        await state.update_data(local_filepath=local_filepath, title=original_title)
+        await state.update_data(local_filepath=local_filepath, title=original_title, caption=caption)
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
@@ -108,7 +112,7 @@ async def ask_for_text(message: Message, state: FSMContext):
 async def receive_text(message: Message, state: FSMContext):
     data = await state.get_data()
     header = f"• Трек — {data['title']}\n\n<blockquote expandable>Текст:\n"
-    footer = "</blockquote>\n\n<b>@airears</b>"
+    footer = get_footer()
     text = message.text[:800] + "..." if len(message.text) > 800 else message.text
     caption = f"{header}{text}{footer}"
     
@@ -122,7 +126,7 @@ async def approve_post(message: Message, state: FSMContext):
     data = await state.get_data()
     path = data['local_filepath']
     try:
-        await bot.send_audio(CHANNEL_ID, audio=FSInputFile(path), caption=data.get('caption', '...'), title=data['title'], performer="ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs")
+        await bot.send_audio(CHANNEL_ID, audio=FSInputFile(path), caption=data['caption'], title=data['title'], performer="ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs")
         await message.reply("✅ Опубликовано!")
     finally:
         if os.path.exists(path): os.remove(path)
