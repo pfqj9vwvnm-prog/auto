@@ -50,9 +50,12 @@ def fetch_lyrics(title, artist):
         return re.sub(r'(\d*Embed$|^.*Lyrics\n?)', '', song.lyrics).strip() if song and song.lyrics else "Текст не найден."
     except: return "Текст не найден."
 
+@dp.message(F.text == "/start")
+async def cmd_start(message: Message):
+    await message.answer("👋 Привет! Пришли мне аудиофайл, и я оформлю его для канала.")
+
 @dp.message(F.audio)
 async def handle_audio(message: Message, state: FSMContext):
-    # Сохраняем file_id, чтобы не скачивать файл
     await state.update_data(file_id=message.audio.file_id, title=message.audio.title or "Unknown", artist=message.audio.performer or "")
     await state.set_state(PostState.waiting_for_lang)
     await message.reply("Куда публикуем? Напиши /ru или /uz")
@@ -66,7 +69,6 @@ async def set_lang(message: Message, state: FSMContext):
     caption = build_caption(lang, data['title'], lyrics)
     await state.update_data(lang=lang, caption=caption)
     
-    # Отправляем аудио по file_id, чтобы не дублировать загрузку
     await message.answer_audio(audio=data['file_id'], caption=caption)
     await message.answer("Пример готов.\n/y — публ., /n — отмена, /text — изменить текст.")
     await state.set_state(PostState.waiting_for_action)
@@ -88,8 +90,11 @@ async def get_text(message: Message, state: FSMContext):
 async def publish(message: Message, state: FSMContext):
     data = await state.get_data()
     chat = CHANNEL_RU if data['lang'] == "ru" else CHANNEL_UZ
-    await bot.send_audio(chat, audio=data['file_id'], caption=data['caption'])
-    await message.reply(f"✅ Опубликовано в {chat}!")
+    try:
+        await bot.send_audio(chat, audio=data['file_id'], caption=data['caption'])
+        await message.reply(f"✅ Опубликовано в {chat}!")
+    except Exception as e:
+        await message.reply(f"Ошибка публикации: {e}")
     await state.clear()
 
 @dp.message(PostState.waiting_for_action, F.text == "/n")
