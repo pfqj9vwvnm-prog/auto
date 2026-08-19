@@ -19,7 +19,6 @@ CHANNEL_RU = "@airears"
 CHANNEL_UZ = "@airMusik_uz"
 COVER_PATH = "cover.jpeg"
 
-# 1. СНАЧАЛА создаем бота и диспетчер (dp)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -61,12 +60,15 @@ def edit_metadata(file_path: str, new_title: str, lang: str):
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=f.read()))
     audio.save(v2_version=3)
 
+# Фоновый обработчик очереди (теперь запускается через startup)
 async def queue_worker():
     global post_delay
+    print("🔄 Воркер очереди успешно запущен!")
     while True:
         task = await post_queue.get()
         try:
             chat = CHANNEL_RU if task['lang'] == "ru" else CHANNEL_UZ
+            print(f"📤 Отправка трека '{task['title']}' в канал {chat}...")
             await bot.send_audio(
                 chat_id=chat,
                 audio=FSInputFile(task['file_path']),
@@ -74,8 +76,9 @@ async def queue_worker():
                 title=task['title'],
                 performer=task['performer']
             )
+            print(f"✅ Трек '{task['title']}' успешно отправлен!")
         except Exception as e:
-            print(f"Ошибка отправки из очереди: {e}")
+            print(f"❌ Ошибка отправки из очереди: {e}")
         finally:
             if os.path.exists(task['file_path']):
                 try:
@@ -83,9 +86,15 @@ async def queue_worker():
                 except:
                     pass
             post_queue.task_done()
+        
+        # Ждем заданную задержку перед следующим постом
         await asyncio.sleep(post_delay)
 
-# 2. ПОТОМ идут все обработчики (теперь dp уже существует)
+# Регистрируем запуск воркера при старте бота
+@dp.startup()
+async def on_startup(bot: Bot):
+    asyncio.create_task(queue_worker())
+
 @dp.message(F.text == "/start")
 async def cmd_start(message: Message):
     current_mode = user_langs.get(message.from_user.id, "ru")
@@ -95,7 +104,7 @@ async def cmd_start(message: Message):
         "🇷🇺 /ru — переключить на русский (@airears)\n"
         "🇺🇿 /uz — переключить на узбекский (@airMusik_uz)\n"
         f"⏱ `/cd [сек]` — изменить интервал очереди (сейчас: <code>{post_delay}</code> сек)\n\n"
-        "Присылай аудиофайлы (можно много), бот сам возьмет длительность, оформит трек и поставит в очередь!"
+        "Присылай аудиофайлы, бот сам возьмет длительность, оформит трек и отправит в канал по очереди!"
     )
 
 @dp.message(F.text.in_({"/ru", "/uz"}))
@@ -144,16 +153,15 @@ async def handle_audio(message: Message):
         })
         
         q_size = post_queue.qsize()
-        await message.reply(f"📥 Трек добавлен в очередь! Позиция: {q_size}. Длительность: {format_duration(duration_seconds)}")
+        await message.reply(f"📥 Трек добавлен в очередь! Позиция в очереди: {q_size}. Интервал отправки: {post_delay}с.")
     except Exception as e:
         await message.reply(f"❌ Ошибка обработки: {e}")
         if os.path.exists(local_path):
             os.remove(local_path)
 
 async def main():
-    asyncio.create_task(queue_worker())
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот успешно запущен!")
+    print("Бот запускается...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
