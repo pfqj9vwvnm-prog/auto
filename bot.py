@@ -23,7 +23,6 @@ GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
 CHANNEL_ID = "@airears"
 COVER_PATH = "cover.jpeg"
 
-# Настройка HTML разметки для ссылок
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -64,6 +63,23 @@ def edit_metadata(file_path: str, new_title: str):
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_img.read()))
     audio.save(v2_version=3)
 
+def build_caption(title: str, lyrics: str) -> str:
+    """Безопасно собирает подпись, контролируя лимит Telegram (1024 символа)."""
+    header = f"• Трек — {title}\n\n<blockquote expandable>Текст:\n"
+    footer = get_footer()
+    
+    # Считаем, сколько символов остается чисто под текст песни
+    max_lyrics_len = 1024 - len(header) - len(footer) - len("</blockquote>") - 5
+    
+    if max_lyrics_len < 50:
+        max_lyrics_len = 50 # Защита от сбоев
+        
+    if len(lyrics) > max_lyrics_len:
+        lyrics = lyrics[:max_lyrics_len] + "..."
+        
+    # Всегда строго добавляем закрывающий тег в конце блока цитаты
+    return f"{header}{lyrics}</blockquote>{footer}"
+
 @dp.message(F.text == "/start")
 async def cmd_start(message: Message):
     await message.answer("👋 Привет! Пришли мне аудиофайл, и я оформлю его для канала @airears.")
@@ -90,11 +106,7 @@ async def handle_audio(message: Message, state: FSMContext):
         await asyncio.to_thread(edit_metadata, local_filepath, original_title)
         lyrics = await asyncio.to_thread(fetch_lyrics_sync, original_title, original_artist)
 
-        header = f"• Трек — {original_title}\n\n<blockquote expandable>Текст:\n"
-        footer = get_footer()
-        max_len = 1024 - len(header) - len(footer) - 5
-        lyrics = lyrics[:max_len] + "..." if len(lyrics) > max_len else lyrics
-        caption = f"{header}{lyrics}{footer}"
+        caption = build_caption(original_title, lyrics)
 
         await message.answer_audio(audio=FSInputFile(local_filepath), caption=caption, title=original_title, performer="ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs")
         await message.answer("👆 Пример готов.\n/y — публ.\n/n — отмена\n/text — вставить текст вручную")
@@ -111,10 +123,7 @@ async def ask_for_text(message: Message, state: FSMContext):
 @dp.message(PostState.waiting_for_text)
 async def receive_text(message: Message, state: FSMContext):
     data = await state.get_data()
-    header = f"• Трек — {data['title']}\n\n<blockquote expandable>Текст:\n"
-    footer = get_footer()
-    text = message.text[:800] + "..." if len(message.text) > 800 else message.text
-    caption = f"{header}{text}{footer}"
+    caption = build_caption(data['title'], message.text)
     
     await message.answer_audio(audio=FSInputFile(data['local_filepath']), caption=caption, title=data['title'], performer="ᴛᴩᴇᴋи ʙ ᴛᴦᴋ - @ᴀɪʀᴇᴀʀs")
     await state.update_data(caption=caption)
