@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import logging
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
@@ -11,6 +12,9 @@ from aiogram.enums import ParseMode
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TIT2, TPE1, APIC
 from mutagen.id3 import error as ID3Error
+
+# Включаем логирование, чтобы видеть все ошибки в консоли Railway
+logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 
@@ -27,7 +31,6 @@ post_delay = 60
 user_langs = {}
 
 def format_duration(seconds: int) -> str:
-    """Конвертирует секунды из файла в формат MM:SS (например, 00:06)"""
     if not seconds:
         return "00:00"
     m = seconds // 60
@@ -60,15 +63,20 @@ def edit_metadata(file_path: str, new_title: str, lang: str):
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=f.read()))
     audio.save(v2_version=3)
 
-# Фоновый обработчик очереди (теперь запускается через startup)
 async def queue_worker():
     global post_delay
-    print("🔄 Воркер очереди успешно запущен!")
+    logging.info("🔄 Воркер очереди успешно запущен!")
     while True:
         task = await post_queue.get()
+        chat = CHANNEL_RU if task['lang'] == "ru" else CHANNEL_UZ
+        
         try:
-            chat = CHANNEL_RU if task['lang'] == "ru" else CHANNEL_UZ
-            print(f"📤 Отправка трека '{task['title']}' в канал {chat}...")
+            logging.info(f"📤 Попытка отправки трека '{task['title']}' в канал {chat}...")
+            
+            if not os.path.exists(task['file_path']):
+                logging.error(f"❌ Файл не найден на диске: {task['file_path']}")
+                continue
+
             await bot.send_audio(
                 chat_id=chat,
                 audio=FSInputFile(task['file_path']),
@@ -76,21 +84,20 @@ async def queue_worker():
                 title=task['title'],
                 performer=task['performer']
             )
-            print(f"✅ Трек '{task['title']}' успешно отправлен!")
+            logging.info(f"✅ Трек '{task['title']}' успешно отправлен в {chat}!")
         except Exception as e:
-            print(f"❌ Ошибка отправки из очереди: {e}")
+            logging.error(f"❌ Ошибка отправки из очереди в {chat}: {e}")
         finally:
             if os.path.exists(task['file_path']):
                 try:
                     os.remove(task['file_path'])
-                except:
-                    pass
+                except Exception as ex:
+                    logging.error(f"Не удалось удалить временный файл: {ex}")
             post_queue.task_done()
         
-        # Ждем заданную задержку перед следующим постом
+        logging.info(f"⏳ Ожидание {post_delay} секунд перед следующим треком...")
         await asyncio.sleep(post_delay)
 
-# Регистрируем запуск воркера при старте бота
 @dp.startup()
 async def on_startup(bot: Bot):
     asyncio.create_task(queue_worker())
@@ -104,7 +111,7 @@ async def cmd_start(message: Message):
         "🇷🇺 /ru — переключить на русский (@airears)\n"
         "🇺🇿 /uz — переключить на узбекский (@airMusik_uz)\n"
         f"⏱ `/cd [сек]` — изменить интервал очереди (сейчас: <code>{post_delay}</code> сек)\n\n"
-        "Присылай аудиофайлы, бот сам возьмет длительность, оформит трек и отправит в канал по очереди!"
+        "Присылай аудиофайлы, бот обработает их и отправит в канал."
     )
 
 @dp.message(F.text.in_({"/ru", "/uz"}))
@@ -153,15 +160,15 @@ async def handle_audio(message: Message):
         })
         
         q_size = post_queue.qsize()
-        await message.reply(f"📥 Трек добавлен в очередь! Позиция в очереди: {q_size}. Интервал отправки: {post_delay}с.")
+        await message.reply(f"📥 Трек добавлен в очередь! Позиция: {q_size}.")
     except Exception as e:
-        await message.reply(f"❌ Ошибка обработки: {e}")
+        await message.reply(f"❌ Ошибка скачивания/обработки: {e}")
         if os.path.exists(local_path):
             os.remove(local_path)
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот запускается...")
+    logging.info("Бот запускается...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
