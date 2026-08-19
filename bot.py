@@ -82,7 +82,7 @@ def edit_metadata(file_path: str, new_title: str):
     audio.save(v2_version=3)
 
 @dp.message(F.audio)
-async function handle_audio(message: Message, state: FSMContext):
+async def handle_audio(message: Message, state: FSMContext):
     # Если бот уже ждет ответа по другому треку
     if await state.get_state() == PostState.waiting_for_action:
         await message.reply("Сначала заверши работу с предыдущим треком: напиши /y или /n")
